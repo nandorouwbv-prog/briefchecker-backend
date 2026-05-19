@@ -3,7 +3,7 @@ import express from "express";
 import { analyzeDocumentRouter } from "./routes/analyze-document.js";
 import { healthRouter } from "./routes/health.js";
 
-const BODY_LIMIT = "512kb";
+const BODY_LIMIT = "8mb";
 
 export const app = express();
 

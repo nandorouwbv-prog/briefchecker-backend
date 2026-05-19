@@ -1,3 +1,4 @@
+import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import OpenAI from "openai";
 import {
   ANALYZE_RESPONSE_JSON_SCHEMA,
@@ -7,7 +8,7 @@ import {
 } from "../schemas.js";
 import { parseJsonWithRepair } from "./json-repair.js";
 
-const SYSTEM_PROMPT = `Je bent BriefChecker, een AI-assistent die Nederlandse brieven, contracten en abonnementen in eenvoudig Nederlands uitlegt. Je geeft samenvattingen, actiepunten en voorbeeldteksten. Je geeft geen juridisch, financieel of fiscaal advies.
+const SYSTEM_PROMPT = `Je bent BriefChecker, een AI-assistent die Nederlandse brieven, contracten, abonnementen en officiële documenten in eenvoudig Nederlands uitlegt. Je geeft samenvattingen, actiepunten, deadlines en voorbeeldbrieven. Je geeft geen juridisch, financieel of fiscaal advies.
 
 Regels:
 - Schrijf alles in het Nederlands, in eenvoudige taal.
@@ -18,6 +19,13 @@ Regels:
 - Voor category energy, telecom of insurance: schat possibleSavingMonthly alleen in als er genoeg kostinformatie in het document staat; anders laat het veld weg.
 - category in de JSON moet overeenkomen met de door de gebruiker gekozen categorie, tenzij het document duidelijk een andere categorie aangeeft.
 - Antwoord uitsluitend met geldig JSON, zonder markdown of extra tekst.`;
+
+const IMAGE_ANALYSIS_RULES = `
+Extra regels voor afbeeldingen:
+- Lees eerst de zichtbare tekst uit de afbeelding en analyseer die daarna.
+- Als de afbeelding wazig, afgesneden, onleesbaar is of geen document toont, vermeld dit duidelijk in summary en simpleExplanation.
+- Verzin geen exacte datums, prijzen of aanbieders als die niet zichtbaar zijn.
+- Bij twijfel: gebruik riskLevel "medium" of "high" en een recommended action met type "check".`;
 
 function buildUserPrompt(category: DocumentCategory, text: string, todayISO: string): string {
   return `Analyseer het volgende Nederlandse document.
@@ -36,21 +44,36 @@ ${ANALYZE_RESPONSE_JSON_SCHEMA}
 Zorg dat recommendedActions minimaal één item bevat.`;
 }
 
-export async function analyzeDocumentText(
-  client: OpenAI,
-  category: DocumentCategory,
-  text: string,
-): Promise<AnalyzeDocumentResponse> {
-  const todayISO = new Date().toISOString().slice(0, 10);
+function buildImageUserPrompt(category: DocumentCategory, todayISO: string): string {
+  return `Analyseer het Nederlandse document op de bijgevoegde afbeelding (brief, contract, abonnement of officieel document).
 
+Gekozen categorie door gebruiker: ${category}
+Huidige datum: ${todayISO}
+${IMAGE_ANALYSIS_RULES}
+
+Geef een JSON-object met exact deze velden en types:
+${ANALYZE_RESPONSE_JSON_SCHEMA}
+
+Zorg dat recommendedActions minimaal één item bevat.`;
+}
+
+export function normalizeImageDataUrl(imageBase64: string): string {
+  const trimmed = imageBase64.trim();
+  if (trimmed.startsWith("data:")) {
+    return trimmed;
+  }
+  return `data:image/jpeg;base64,${trimmed}`;
+}
+
+async function completeAndParse(
+  client: OpenAI,
+  messages: ChatCompletionMessageParam[],
+): Promise<AnalyzeDocumentResponse> {
   const completion = await client.chat.completions.create({
     model: "gpt-4o-mini",
     temperature: 0.2,
     response_format: { type: "json_object" },
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: buildUserPrompt(category, text, todayISO) },
-    ],
+    messages,
   });
 
   const content = completion.choices[0]?.message?.content;
@@ -60,4 +83,37 @@ export async function analyzeDocumentText(
 
   const parsed = parseJsonWithRepair(content);
   return analyzeDocumentResponseSchema.parse(parsed);
+}
+
+export async function analyzeDocumentText(
+  client: OpenAI,
+  category: DocumentCategory,
+  text: string,
+): Promise<AnalyzeDocumentResponse> {
+  const todayISO = new Date().toISOString().slice(0, 10);
+
+  return completeAndParse(client, [
+    { role: "system", content: SYSTEM_PROMPT },
+    { role: "user", content: buildUserPrompt(category, text, todayISO) },
+  ]);
+}
+
+export async function analyzeDocumentImage(
+  client: OpenAI,
+  category: DocumentCategory,
+  imageBase64: string,
+): Promise<AnalyzeDocumentResponse> {
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const imageUrl = normalizeImageDataUrl(imageBase64);
+
+  return completeAndParse(client, [
+    { role: "system", content: SYSTEM_PROMPT },
+    {
+      role: "user",
+      content: [
+        { type: "text", text: buildImageUserPrompt(category, todayISO) },
+        { type: "image_url", image_url: { url: imageUrl } },
+      ],
+    },
+  ]);
 }

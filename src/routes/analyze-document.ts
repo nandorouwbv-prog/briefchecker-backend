@@ -1,12 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import OpenAI from "openai";
-import { analyzeDocumentText } from "../lib/openai-analyze.js";
+import { analyzeDocumentImage, analyzeDocumentText } from "../lib/openai-analyze.js";
 import { analyzeDocumentRequestSchema } from "../schemas.js";
-
-const IMAGE_NOT_SUPPORTED = {
-  error: "Afbeeldinganalyse is nog niet beschikbaar. Stuur documenttekst (text) mee.",
-  code: "IMAGE_NOT_SUPPORTED",
-} as const;
 
 function getOpenAIClient(): OpenAI | null {
   const apiKey = process.env.OPENAI_API_KEY;
@@ -28,24 +23,26 @@ analyzeDocumentRouter.post("/", async (req: Request, res: Response) => {
   }
 
   const { category, text, imageBase64 } = parsed.data;
+  const documentText = text?.trim();
+  const hasImage = Boolean(imageBase64?.trim());
 
-  if (imageBase64 && !text?.trim()) {
-    res.status(501).json(IMAGE_NOT_SUPPORTED);
+  if (!documentText && !hasImage) {
+    res.status(400).json({ error: "Geen tekst of afbeelding ontvangen" });
     return;
   }
 
-  const documentText = text!.trim();
-
   const client = getOpenAIClient();
   if (!client) {
-    res.status(500).json({ error: "Analyse mislukt" });
+    res.status(500).json({ error: "OpenAI API key ontbreekt" });
     return;
   }
 
   const isProduction = process.env.NODE_ENV === "production";
 
   try {
-    const result = await analyzeDocumentText(client, category, documentText);
+    const result = documentText
+      ? await analyzeDocumentText(client, category, documentText)
+      : await analyzeDocumentImage(client, category, imageBase64!);
     res.json(result);
   } catch (err) {
     if (!isProduction) {

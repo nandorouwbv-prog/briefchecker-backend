@@ -22,7 +22,7 @@ export const analyzeDocumentRequestSchema = z
     fileName: z.string().optional(),
   })
   .refine((data) => Boolean(data.text?.trim()) || Boolean(data.imageBase64?.trim()), {
-    message: "Geef tekst of een afbeelding mee.",
+    message: "Geen tekst of afbeelding ontvangen",
   });
 
 export type AnalyzeDocumentRequest = z.infer<typeof analyzeDocumentRequestSchema>;
