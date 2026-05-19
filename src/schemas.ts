@@ -41,28 +41,54 @@ export const recommendedActionTypeSchema = z.enum([
 
 export const riskLevelSchema = z.enum(["low", "medium", "high"]);
 
+export const recommendedResponseTypeSchema = z.enum([
+  "none",
+  "pay",
+  "save_only",
+  "reminder",
+  "call",
+  "email",
+  "objection",
+  "cancel",
+  "compare",
+  "ask_explanation",
+]);
+
+export type RecommendedResponseType = z.infer<typeof recommendedResponseTypeSchema>;
+
 export const recommendedActionSchema = z.object({
   type: recommendedActionTypeSchema,
   label: z.string(),
   description: z.string(),
 });
 
-export const analyzeDocumentResponseSchema = z.object({
-  title: z.string(),
-  category: z.string(),
-  provider: z.string().optional(),
-  summary: z.string(),
-  simpleExplanation: z.string(),
-  actionNeeded: z.boolean(),
-  deadlineISO: z.string().optional(),
-  riskLevel: riskLevelSchema,
-  monthlyCost: z.number().optional(),
-  endDateISO: z.string().optional(),
-  cancellationNoticeDays: z.number().optional(),
-  possibleSavingMonthly: z.number().optional(),
-  recommendedActions: z.array(recommendedActionSchema).min(1),
-  generatedLetter: z.string().optional(),
-});
+export const analyzeDocumentResponseSchema = z
+  .object({
+    title: z.string(),
+    category: z.string(),
+    provider: z.string().optional(),
+    summary: z.string(),
+    simpleExplanation: z.string(),
+    actionNeeded: z.boolean(),
+    deadlineISO: z.string().optional(),
+    riskLevel: riskLevelSchema,
+    monthlyCost: z.number().optional(),
+    endDateISO: z.string().optional(),
+    cancellationNoticeDays: z.number().optional(),
+    possibleSavingMonthly: z.number().optional(),
+    recommendedActions: z.array(recommendedActionSchema).min(1),
+    recommendedResponseType: recommendedResponseTypeSchema,
+    shouldGenerateLetter: z.boolean(),
+    responseReason: z.string().optional(),
+    generatedLetter: z.string().optional(),
+  })
+  .transform((data) => {
+    if (!data.shouldGenerateLetter) {
+      const { generatedLetter: _removed, ...rest } = data;
+      return rest;
+    }
+    return data;
+  });
 
 export type AnalyzeDocumentResponse = z.infer<typeof analyzeDocumentResponseSchema>;
 
@@ -86,5 +112,8 @@ export const ANALYZE_RESPONSE_JSON_SCHEMA = `{
       "description": "string"
     }
   ],
-  "generatedLetter": "string (optioneel, voorbeeldtekst)"
+  "recommendedResponseType": "none" | "pay" | "save_only" | "reminder" | "call" | "email" | "objection" | "cancel" | "compare" | "ask_explanation",
+  "shouldGenerateLetter": boolean,
+  "responseReason": "string (optioneel, korte uitleg in het Nederlands waarom wel/geen brief)",
+  "generatedLetter": "string (alleen invullen als shouldGenerateLetter true is; anders weglaten)"
 }`;
