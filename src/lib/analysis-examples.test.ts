@@ -2,6 +2,7 @@
  * Validates example analysis shapes against the response schema (no OpenAI calls).
  * Run: npx tsx src/lib/analysis-examples.test.ts
  */
+import { normalizeImageScanFields } from "./openai-analyze.js";
 import { analyzeDocumentResponseSchema } from "../schemas.js";
 
 const examples = {
@@ -70,6 +71,53 @@ const examples = {
     shouldGenerateLetter: false,
     responseReason: "Vergelijken is meestal voldoende; een brief is nu niet nodig.",
   },
+  unclearScanPartial: {
+    title: "Aanslag gemeentelijke belastingen",
+    category: "tax",
+    summary:
+      "U moet waarschijnlijk een bedrag betalen. De exacte datum is lastig te lezen — controleer het origineel.",
+    simpleExplanation:
+      "Dit lijkt een betaalbrief. Een deel van de scan was onduidelijk; kijk op het papier of de app van de gemeente na.",
+    actionNeeded: true,
+    riskLevel: "medium",
+    recommendedActions: [
+      {
+        type: "pay",
+        label: "Controleer en betaal",
+        description: "Betaal als het bedrag en de datum op het origineel kloppen.",
+      },
+      {
+        type: "check",
+        label: "Controleer de scan",
+        description: "Bekijk het origineel voor de exacte datum en het bedrag.",
+      },
+    ],
+    recommendedResponseType: "pay",
+    shouldGenerateLetter: false,
+    responseReason: "Dit lijkt een betaalverzoek; een brief is meestal niet nodig.",
+    scanQuality: "unclear",
+    scanQualityReason: "De betaaldatum was niet scherp genoeg om zeker te zijn.",
+  },
+  failedScan: {
+    title: "Scan niet leesbaar",
+    category: "other",
+    summary: "De tekst op de foto was niet goed genoeg te lezen voor een analyse.",
+    simpleExplanation:
+      "Maak een nieuwe foto met het hele document scherp en goed verlicht in beeld.",
+    actionNeeded: false,
+    riskLevel: "low",
+    recommendedActions: [
+      {
+        type: "check",
+        label: "Probeer opnieuw",
+        description: "Fotografeer het document opnieuw, recht en zonder schaduw.",
+      },
+    ],
+    recommendedResponseType: "none",
+    shouldGenerateLetter: false,
+    scanQuality: "failed",
+    scanQualityReason: "De tekst op de foto was niet goed genoeg te lezen.",
+  },
   priceIncrease: {
     title: "Prijsverhoging abonnement",
     category: "subscription",
@@ -133,7 +181,39 @@ for (const [name, payload] of Object.entries(examples)) {
     failed++;
     continue;
   }
+  if (name === "unclearScanPartial") {
+    if (data.scanQuality !== "unclear" || /maak een duidelijkere foto/i.test(data.summary)) {
+      console.error(`FAIL ${name}: expected partial unclear analysis without hard failure message`);
+      failed++;
+      continue;
+    }
+  }
+  if (name === "failedScan" && data.scanQuality !== "failed") {
+    console.error(`FAIL ${name}: expected failed scan quality`);
+    failed++;
+    continue;
+  }
   console.log(`OK ${name}`);
+}
+
+const stripped = normalizeImageScanFields(
+  analyzeDocumentResponseSchema.parse({
+    ...examples.taxPaymentBill,
+    scanQuality: "unclear",
+    summary: "Belastingaanslag. Maak een duidelijkere foto voor details.",
+    simpleExplanation: "Betaal op tijd. Maak een duidelijkere foto als iets onduidelijk is.",
+  }),
+);
+
+if (
+  stripped.scanQuality !== "unclear" ||
+  /maak een duidelijkere foto/i.test(stripped.summary) ||
+  /maak een duidelijkere foto/i.test(stripped.simpleExplanation)
+) {
+  console.error("FAIL stripPrematureFailureMessaging");
+  failed++;
+} else {
+  console.log("OK stripPrematureFailureMessaging");
 }
 
 if (failed > 0) {

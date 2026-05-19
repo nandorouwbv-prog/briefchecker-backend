@@ -56,6 +56,10 @@ export const recommendedResponseTypeSchema = z.enum([
 
 export type RecommendedResponseType = z.infer<typeof recommendedResponseTypeSchema>;
 
+export const scanQualitySchema = z.enum(["good", "unclear", "failed"]);
+
+export type ScanQuality = z.infer<typeof scanQualitySchema>;
+
 export const recommendedActionSchema = z.object({
   type: recommendedActionTypeSchema,
   label: z.string(),
@@ -81,6 +85,8 @@ export const analyzeDocumentResponseSchema = z
     shouldGenerateLetter: z.boolean(),
     responseReason: z.string().optional(),
     generatedLetter: z.string().optional(),
+    scanQuality: scanQualitySchema.optional(),
+    scanQualityReason: z.string().optional(),
   })
   .transform((data) => {
     if (!data.shouldGenerateLetter) {
@@ -116,4 +122,12 @@ export const ANALYZE_RESPONSE_JSON_SCHEMA = `{
   "shouldGenerateLetter": boolean,
   "responseReason": "string (optioneel, korte uitleg in het Nederlands waarom wel/geen brief)",
   "generatedLetter": "string (alleen invullen als shouldGenerateLetter true is; anders weglaten)"
+}`;
+
+export const IMAGE_SCAN_JSON_FIELDS = `
+  "scanQuality": "good" | "unclear" | "failed" (verplicht bij afbeeldingen),
+  "scanQualityReason": "string (optioneel, korte uitleg over leesbaarheid scan; verplicht bij unclear of failed)"`;
+
+export const ANALYZE_IMAGE_RESPONSE_JSON_SCHEMA = `${ANALYZE_RESPONSE_JSON_SCHEMA.slice(0, -2)},
+${IMAGE_SCAN_JSON_FIELDS}
 }`;

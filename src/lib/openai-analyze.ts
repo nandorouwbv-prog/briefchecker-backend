@@ -1,10 +1,12 @@
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import OpenAI from "openai";
 import {
+  ANALYZE_IMAGE_RESPONSE_JSON_SCHEMA,
   ANALYZE_RESPONSE_JSON_SCHEMA,
   analyzeDocumentResponseSchema,
   type AnalyzeDocumentResponse,
   type DocumentCategory,
+  type ScanQuality,
 } from "../schemas.js";
 import { parseJsonWithRepair } from "./json-repair.js";
 
@@ -66,12 +68,91 @@ Voorbeelden:
 
 Koppel recommendedActions aan recommendedResponseType (bijv. pay bij betaalbrief, compare bij contractvergelijking).`;
 
-const IMAGE_ANALYSIS_RULES = `
-Extra regels voor afbeeldingen:
-- Lees eerst de zichtbare tekst uit de afbeelding en analyseer die daarna.
-- Als de afbeelding wazig, afgesneden, onleesbaar is of geen document toont, vermeld dit duidelijk in summary en simpleExplanation.
+const IMAGE_SCAN_QUALITY_RULES = `
+Scan-kwaliteit (verplicht bij afbeeldingen):
+- scanQuality: beoordeel hoe goed de tekst op de foto leesbaar is.
+- Als het document grotendeels leesbaar is: geef altijd de best mogelijke gestructureerde analyse. Wijs de scan niet af alleen omdat een klein deel onduidelijk is.
+- scanQuality = "good": tekst is duidelijk genoeg voor een betrouwbare analyse.
+- scanQuality = "unclear": een deel is lastig te lezen, maar er is genoeg zichtbare tekst voor een nuttige analyse.
+  - Vul summary en simpleExplanation wél in met wat je wél ziet.
+  - Voeg een korte noot toe dat de scan gecontroleerd moet worden (bijv. in summary of simpleExplanation).
+  - Haal zichtbare datums, bedragen, aanbieder, deadlines en acties waar mogelijk alsnog uit.
+  - Laat deadlineISO, monthlyCost en vergelijkbare velden weg als je het niet zeker weet; leg dat kort uit in scanQualityReason.
+  - Gebruik géén tekst als "maak een duidelijkere foto" bij scanQuality "unclear".
+- scanQuality = "failed": alleen als de tekst echt onleesbaar is, extreem wazig, sterk afgesneden, geen document toont, of vrijwel geen tekst te herkennen is.
+  - Alleen dan mag je in scanQualityReason adviseren een duidelijkere foto te maken.
+  - Geef dan minimale analyse; recommendedResponseType "none", shouldGenerateLetter false, en actie type "check".
+
+Algemeen voor afbeeldingen:
+- Lees eerst alle zichtbare tekst en analyseer daarna.
 - Verzin geen exacte datums, prijzen of aanbieders als die niet zichtbaar zijn.
-- Bij twijfel: gebruik riskLevel "medium" of "high", recommendedResponseType "none", shouldGenerateLetter false, en een recommended action met type "check".`;
+- Bij twijfel over inhoud: riskLevel "medium" of "high", laat onzekere exacte velden weg.
+- Betaaltermijn zichtbaar: recommendedResponseType "pay", shouldGenerateLetter false.
+- Vraag om documenten of schriftelijke reactie: recommendedResponseType "email", shouldGenerateLetter true indien nuttig.
+- Puur informatief: recommendedResponseType "save_only", shouldGenerateLetter false.`;
+
+const UNCLEAR_PHOTO_PHRASES = [
+  /maak een duidelijkere foto/i,
+  /neem een (nieuwe )?duidelijkere foto/i,
+  /foto is niet duidelijk genoeg/i,
+  /afbeelding is (te )?onduidelijk/i,
+  /scan is niet leesbaar/i,
+  /probeer opnieuw te scannen/i,
+];
+
+function stripPrematureFailureMessaging(
+  data: AnalyzeDocumentResponse,
+): AnalyzeDocumentResponse {
+  if (data.scanQuality === "failed") {
+    return data;
+  }
+
+  const scrub = (text: string): string => {
+    let result = text;
+    for (const pattern of UNCLEAR_PHOTO_PHRASES) {
+      result = result.replace(pattern, "").trim();
+    }
+    return result.replace(/\s{2,}/g, " ").trim();
+  };
+
+  const summary = scrub(data.summary);
+  const simpleExplanation = scrub(data.simpleExplanation);
+
+  return {
+    ...data,
+    summary: summary || data.summary,
+    simpleExplanation: simpleExplanation || data.simpleExplanation,
+  };
+}
+
+export function normalizeImageScanFields(data: AnalyzeDocumentResponse): AnalyzeDocumentResponse {
+  let scanQuality: ScanQuality | undefined = data.scanQuality;
+
+  if (!scanQuality) {
+    const hasSubstance =
+      data.summary.trim().length > 40 &&
+      data.recommendedActions.length > 0 &&
+      data.title.trim().length > 0;
+    scanQuality = hasSubstance ? "good" : "unclear";
+  }
+
+  const normalized: AnalyzeDocumentResponse = {
+    ...stripPrematureFailureMessaging(data),
+    scanQuality,
+  };
+
+  if (scanQuality === "unclear" && !normalized.scanQualityReason?.trim()) {
+    normalized.scanQualityReason =
+      "Een deel van de scan was lastig te lezen. Controleer datums en bedragen op het origineel.";
+  }
+
+  if (scanQuality === "failed" && !normalized.scanQualityReason?.trim()) {
+    normalized.scanQualityReason =
+      "De tekst op de foto was niet goed genoeg te lezen. Maak een scherpere foto met het hele document in beeld.";
+  }
+
+  return normalized;
+}
 
 function buildUserPrompt(category: DocumentCategory, text: string, todayISO: string): string {
   return `Analyseer het volgende Nederlandse document.
@@ -96,13 +177,16 @@ function buildImageUserPrompt(category: DocumentCategory, todayISO: string): str
 
 Gekozen categorie door gebruiker: ${category}
 Huidige datum: ${todayISO}
-${IMAGE_ANALYSIS_RULES}
+${IMAGE_SCAN_QUALITY_RULES}
 
 Geef een JSON-object met exact deze velden en types:
-${ANALYZE_RESPONSE_JSON_SCHEMA}
+${ANALYZE_IMAGE_RESPONSE_JSON_SCHEMA}
 
-Zorg dat recommendedActions minimaal één item bevat en aansluit bij recommendedResponseType.
-Zet shouldGenerateLetter op false tenzij een brief of mail echt helpt; laat generatedLetter dan weg.`;
+Belangrijk:
+- Vul scanQuality altijd in ("good", "unclear" of "failed").
+- Bij "good" of "unclear": lever altijd een volledige analyse op basis van zichtbare tekst.
+- Zorg dat recommendedActions minimaal één item bevat en aansluit bij recommendedResponseType.
+- Zet shouldGenerateLetter op false tenzij een brief of mail echt helpt; laat generatedLetter dan weg.`;
 }
 
 export function normalizeImageDataUrl(imageBase64: string): string {
@@ -116,10 +200,11 @@ export function normalizeImageDataUrl(imageBase64: string): string {
 async function completeAndParse(
   client: OpenAI,
   messages: ChatCompletionMessageParam[],
+  options?: { temperature?: number; normalizeImageScan?: boolean },
 ): Promise<AnalyzeDocumentResponse> {
   const completion = await client.chat.completions.create({
     model: "gpt-4o-mini",
-    temperature: 0.2,
+    temperature: options?.temperature ?? 0.2,
     response_format: { type: "json_object" },
     messages,
   });
@@ -130,7 +215,8 @@ async function completeAndParse(
   }
 
   const parsed = parseJsonWithRepair(content);
-  return analyzeDocumentResponseSchema.parse(parsed);
+  const validated = analyzeDocumentResponseSchema.parse(parsed);
+  return options?.normalizeImageScan ? normalizeImageScanFields(validated) : validated;
 }
 
 export async function analyzeDocumentText(
@@ -154,14 +240,18 @@ export async function analyzeDocumentImage(
   const todayISO = new Date().toISOString().slice(0, 10);
   const imageUrl = normalizeImageDataUrl(imageBase64);
 
-  return completeAndParse(client, [
-    { role: "system", content: SYSTEM_PROMPT },
-    {
-      role: "user",
-      content: [
-        { type: "text", text: buildImageUserPrompt(category, todayISO) },
-        { type: "image_url", image_url: { url: imageUrl } },
-      ],
-    },
-  ]);
+  return completeAndParse(
+    client,
+    [
+      { role: "system", content: `${SYSTEM_PROMPT}\n${IMAGE_SCAN_QUALITY_RULES}` },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: buildImageUserPrompt(category, todayISO) },
+          { type: "image_url", image_url: { url: imageUrl, detail: "high" } },
+        ],
+      },
+    ],
+    { temperature: 0.1, normalizeImageScan: true },
+  );
 }
