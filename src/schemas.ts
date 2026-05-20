@@ -60,6 +60,10 @@ export const scanQualitySchema = z.enum(["good", "unclear", "failed"]);
 
 export type ScanQuality = z.infer<typeof scanQualitySchema>;
 
+export const deadlineStatusSchema = z.enum(["none", "upcoming", "today", "overdue"]);
+
+export type DeadlineStatus = z.infer<typeof deadlineStatusSchema>;
+
 export const recommendedActionSchema = z.object({
   type: recommendedActionTypeSchema,
   label: z.string(),
@@ -75,6 +79,10 @@ export const analyzeDocumentResponseSchema = z
     simpleExplanation: z.string(),
     actionNeeded: z.boolean(),
     deadlineISO: z.string().optional(),
+    deadlineStatus: deadlineStatusSchema.optional(),
+    daysUntilDeadline: z.number().int().nonnegative().optional(),
+    daysOverdue: z.number().int().positive().optional(),
+    urgentWarning: z.string().optional(),
     riskLevel: riskLevelSchema,
     monthlyCost: z.number().optional(),
     endDateISO: z.string().optional(),
@@ -106,6 +114,10 @@ export const ANALYZE_RESPONSE_JSON_SCHEMA = `{
   "simpleExplanation": "string",
   "actionNeeded": boolean,
   "deadlineISO": "string ISO 8601 (optioneel, alleen bij exacte datum)",
+  "deadlineStatus": "none" | "upcoming" | "today" | "overdue",
+  "daysUntilDeadline": number (optioneel, alleen bij upcoming: dagen tot deadline)",
+  "daysOverdue": number (optioneel, alleen bij overdue: dagen te laat)",
+  "urgentWarning": "string (optioneel, korte Nederlandse waarschuwing bij urgente of verlopen deadline)",
   "riskLevel": "low" | "medium" | "high",
   "monthlyCost": number (optioneel),
   "endDateISO": "string ISO 8601 (optioneel, alleen bij exacte datum)",

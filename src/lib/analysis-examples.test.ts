@@ -2,7 +2,7 @@
  * Validates example analysis shapes against the response schema (no OpenAI calls).
  * Run: npx tsx src/lib/analysis-examples.test.ts
  */
-import { normalizeImageScanFields } from "./openai-analyze.js";
+import { enrichDeadlineFields, normalizeImageScanFields } from "./openai-analyze.js";
 import { analyzeDocumentResponseSchema } from "../schemas.js";
 
 const examples = {
@@ -118,6 +118,41 @@ const examples = {
     scanQuality: "failed",
     scanQualityReason: "De tekst op de foto was niet goed genoeg te lezen.",
   },
+  overduePayment: {
+    title: "Aanmaning energierekening",
+    category: "energy",
+    summary:
+      "De betaaltermijn was 24 maart 2026. Deze deadline is verlopen; onderneem zo snel mogelijk actie.",
+    simpleExplanation:
+      "Je moest betalen vóór 24 maart 2026. Die datum is inmiddels verstreken. Controleer of je al betaald hebt.",
+    actionNeeded: true,
+    deadlineISO: "2026-03-24",
+    deadlineStatus: "overdue",
+    daysOverdue: 57,
+    riskLevel: "high",
+    urgentWarning:
+      "Deze betaaldeadline is verlopen. Controleer of je al betaald hebt of onderneem zo snel mogelijk actie.",
+    recommendedActions: [
+      {
+        type: "check",
+        label: "Controleer of je al betaald hebt",
+        description: "Kijk of de betaling al is gedaan.",
+      },
+      {
+        type: "pay",
+        label: "Betaal zo snel mogelijk als dit nog openstaat",
+        description: "Betaal het openstaande bedrag zo snel mogelijk.",
+      },
+      {
+        type: "call",
+        label: "Neem contact op als je niet kunt betalen of twijfelt",
+        description: "Bel bij twijfel of betalingsproblemen.",
+      },
+    ],
+    recommendedResponseType: "pay",
+    shouldGenerateLetter: false,
+    responseReason: "Dit is een verlopen betaalverzoek; een brief is meestal niet nodig.",
+  },
   priceIncrease: {
     title: "Prijsverhoging abonnement",
     category: "subscription",
@@ -214,6 +249,63 @@ if (
   failed++;
 } else {
   console.log("OK stripPrematureFailureMessaging");
+}
+
+const overdueEnriched = enrichDeadlineFields(
+  analyzeDocumentResponseSchema.parse({
+    ...examples.taxPaymentBill,
+    deadlineISO: "2026-03-24",
+    summary: "Betaal vóór 24 maart 2026.",
+    riskLevel: "medium",
+  }),
+  "2026-05-20",
+);
+
+if (
+  overdueEnriched.deadlineStatus !== "overdue" ||
+  !overdueEnriched.daysOverdue ||
+  !overdueEnriched.urgentWarning?.includes("verlopen") ||
+  !overdueEnriched.actionNeeded ||
+  overdueEnriched.shouldGenerateLetter ||
+  overdueEnriched.recommendedResponseType !== "pay" ||
+  !overdueEnriched.recommendedActions.some((a) => a.label.includes("Controleer of je al betaald hebt"))
+) {
+  console.error("FAIL enrichDeadlineFields overdue payment");
+  failed++;
+} else {
+  console.log("OK enrichDeadlineFields overdue payment");
+}
+
+const noDeadline = enrichDeadlineFields(
+  analyzeDocumentResponseSchema.parse(examples.energyContractEnding),
+  "2026-05-20",
+);
+
+if (noDeadline.deadlineStatus !== "none") {
+  console.error("FAIL enrichDeadlineFields no deadline");
+  failed++;
+} else {
+  console.log("OK enrichDeadlineFields no deadline");
+}
+
+const upcomingSoon = enrichDeadlineFields(
+  analyzeDocumentResponseSchema.parse({
+    ...examples.taxPaymentBill,
+    deadlineISO: "2026-05-25",
+    riskLevel: "low",
+  }),
+  "2026-05-20",
+);
+
+if (
+  upcomingSoon.deadlineStatus !== "upcoming" ||
+  upcomingSoon.daysUntilDeadline !== 5 ||
+  !upcomingSoon.urgentWarning?.includes("nadert")
+) {
+  console.error("FAIL enrichDeadlineFields upcoming within 7 days");
+  failed++;
+} else {
+  console.log("OK enrichDeadlineFields upcoming within 7 days");
 }
 
 if (failed > 0) {

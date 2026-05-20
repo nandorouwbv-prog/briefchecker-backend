@@ -10,6 +10,38 @@ import {
 } from "../schemas.js";
 import { parseJsonWithRepair } from "./json-repair.js";
 
+/** Low temperature for reproducible document analysis (text and image). */
+const ANALYSIS_TEMPERATURE = 0;
+
+const DEADLINE_AWARENESS_RULES = `
+Deadline-bewustzijn (verplicht bij elke analyse):
+- De huidige datum staat in de gebruikersprompt (YYYY-MM-DD). Vergelijk alle geëxtraheerde deadlines daarmee.
+- Zet deadlineStatus altijd: "none" | "upcoming" | "today" | "overdue".
+- Vul deadlineISO alleen in bij een duidelijke, exacte datum in het document. Bij twijfel of een vage datum: laat deadlineISO weg en leg onzekerheid uit in summary of scanQualityReason.
+- Verzin geen datums.
+
+Status en velden:
+- Geen duidelijke deadline: deadlineStatus = "none" (laat daysUntilDeadline en daysOverdue weg).
+- Deadline vóór de huidige datum: deadlineStatus = "overdue", daysOverdue = aantal kalenderdagen te laat, actionNeeded = true, riskLevel meestal "high", urgentWarning in het Nederlands dat de deadline is verlopen (niet alleen de datum herhalen).
+- Deadline is vandaag: deadlineStatus = "today", actionNeeded = true, riskLevel meestal "high", urgentWarning dat actie vandaag nodig is.
+- Deadline in de toekomst: deadlineStatus = "upcoming", daysUntilDeadline = aantal kalenderdagen tot de deadline.
+  - Binnen 7 dagen: riskLevel meestal "medium" of "high", urgentWarning dat de deadline nadert.
+  - Meer dan 7 dagen: urgentWarning meestal weglaten.
+
+In summary en simpleExplanation bij verlopen deadlines:
+- Benoem expliciet dat de deadline is verlopen en dat snelle actie nodig is.
+- Herhaal niet alleen "betaal vóór [datum]" zonder te vermelden dat die datum al voorbij is.
+
+Betaalbrief met verlopen betaaldeadline:
+- recommendedResponseType = "pay" of "call"
+- shouldGenerateLetter = false, tenzij het document duidelijk een schriftelijke reactie vereist
+- recommendedActions moet minstens bevatten:
+  - "Controleer of je al betaald hebt"
+  - "Betaal zo snel mogelijk als dit nog openstaat"
+  - "Neem contact op als je niet kunt betalen of twijfelt"
+- urgentWarning bijvoorbeeld: "Deze betaaldeadline is verlopen. Controleer of je al betaald hebt of onderneem zo snel mogelijk actie."
+- Voor andere verlopen deadlines, urgentWarning bijvoorbeeld: "Deze deadline is verlopen. Onderneem zo snel mogelijk actie."`;
+
 const SYSTEM_PROMPT = `Je bent BriefChecker, een AI-assistent die Nederlandse brieven, contracten, abonnementen en officiële documenten in eenvoudig Nederlands uitlegt. Je geeft samenvattingen, actiepunten, deadlines en soms een voorbeeldbrief of -mail. Je geeft geen juridisch, financieel of fiscaal advies.
 
 Regels:
@@ -18,6 +50,7 @@ Regels:
 - Als de tekst onduidelijk of onvolledig is, zeg dat duidelijk in summary en simpleExplanation.
 - Haal belangrijke data, deadlines, kosten, aanbieder en actiepunten eruit.
 - Gebruik ISO-datums (YYYY-MM-DD of volledige ISO 8601) alleen als er een exacte datum in de tekst staat; anders laat deadlineISO en endDateISO weg.
+${DEADLINE_AWARENESS_RULES}
 - Voor category energy, telecom of insurance: schat possibleSavingMonthly alleen in als er genoeg kostinformatie in het document staat; anders laat het veld weg.
 - category in de JSON moet overeenkomen met de door de gebruiker gekozen categorie, tenzij het document duidelijk een andere categorie aangeeft.
 - Antwoord uitsluitend met geldig JSON, zonder markdown of extra tekst.
@@ -87,7 +120,7 @@ Algemeen voor afbeeldingen:
 - Lees eerst alle zichtbare tekst en analyseer daarna.
 - Verzin geen exacte datums, prijzen of aanbieders als die niet zichtbaar zijn.
 - Bij twijfel over inhoud: riskLevel "medium" of "high", laat onzekere exacte velden weg.
-- Betaaltermijn zichtbaar: recommendedResponseType "pay", shouldGenerateLetter false.
+- Betaaltermijn zichtbaar: recommendedResponseType "pay", shouldGenerateLetter false; pas deadlineStatus en urgentWarning toe zoals in de deadline-regels.
 - Vraag om documenten of schriftelijke reactie: recommendedResponseType "email", shouldGenerateLetter true indien nuttig.
 - Puur informatief: recommendedResponseType "save_only", shouldGenerateLetter false.`;
 
@@ -99,6 +132,167 @@ const UNCLEAR_PHOTO_PHRASES = [
   /scan is niet leesbaar/i,
   /probeer opnieuw te scannen/i,
 ];
+
+function parseDateOnly(iso: string): Date {
+  const datePart = iso.slice(0, 10);
+  const [year, month, day] = datePart.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day));
+}
+
+function calendarDaysBetween(fromISO: string, toISO: string): number {
+  const from = parseDateOnly(fromISO);
+  const to = parseDateOnly(toISO);
+  return Math.round((to.getTime() - from.getTime()) / 86_400_000);
+}
+
+function isPaymentContext(data: AnalyzeDocumentResponse): boolean {
+  return (
+    data.recommendedResponseType === "pay" ||
+    data.recommendedActions.some((action) => action.type === "pay")
+  );
+}
+
+function mergeRecommendedActions(
+  existing: AnalyzeDocumentResponse["recommendedActions"],
+  required: AnalyzeDocumentResponse["recommendedActions"],
+): AnalyzeDocumentResponse["recommendedActions"] {
+  const labels = new Set(existing.map((action) => action.label.trim().toLowerCase()));
+  const merged = [...existing];
+  for (const action of required) {
+    if (!labels.has(action.label.trim().toLowerCase())) {
+      merged.push(action);
+      labels.add(action.label.trim().toLowerCase());
+    }
+  }
+  return merged;
+}
+
+const OVERDUE_PAYMENT_ACTIONS: AnalyzeDocumentResponse["recommendedActions"] = [
+  {
+    type: "check",
+    label: "Controleer of je al betaald hebt",
+    description: "Kijk of de betaling al is gedaan voordat je opnieuw betaalt.",
+  },
+  {
+    type: "pay",
+    label: "Betaal zo snel mogelijk als dit nog openstaat",
+    description: "Betaal het openstaande bedrag zo snel mogelijk om extra kosten te beperken.",
+  },
+  {
+    type: "call",
+    label: "Neem contact op als je niet kunt betalen of twijfelt",
+    description: "Bel de aanbieder als je niet kunt betalen, het bedrag onduidelijk is of je vragen hebt.",
+  },
+];
+
+function defaultUrgentWarning(
+  status: "today" | "overdue" | "upcoming",
+  data: AnalyzeDocumentResponse,
+  daysUntil?: number,
+  daysOverdue?: number,
+): string {
+  if (status === "overdue") {
+    if (isPaymentContext(data)) {
+      return "Deze betaaldeadline is verlopen. Controleer of je al betaald hebt of onderneem zo snel mogelijk actie.";
+    }
+    const daysText = daysOverdue === 1 ? "1 dag" : `${daysOverdue} dagen`;
+    return `Deze deadline is verlopen (${daysText} geleden). Onderneem zo snel mogelijk actie.`;
+  }
+  if (status === "today") {
+    return isPaymentContext(data)
+      ? "De betaaldeadline is vandaag. Regel de betaling vandaag nog."
+      : "De deadline is vandaag. Onderneem vandaag actie.";
+  }
+  const daysText = daysUntil === 1 ? "1 dag" : `${daysUntil} dagen`;
+  return isPaymentContext(data)
+    ? `De betaaldeadline nadert (nog ${daysText}). Regel de betaling op tijd.`
+    : `De deadline nadert (nog ${daysText}). Onderneem op tijd actie.`;
+}
+
+function elevateRiskLevel(current: AnalyzeDocumentResponse["riskLevel"]): AnalyzeDocumentResponse["riskLevel"] {
+  if (current === "low") {
+    return "medium";
+  }
+  return "high";
+}
+
+export function enrichDeadlineFields(
+  data: AnalyzeDocumentResponse,
+  todayISO: string,
+): AnalyzeDocumentResponse {
+  if (!data.deadlineISO?.trim()) {
+    const { daysUntilDeadline: _d, daysOverdue: _o, ...rest } = data;
+    return {
+      ...rest,
+      deadlineStatus: data.deadlineStatus ?? "none",
+    };
+  }
+
+  const deadlineISO = data.deadlineISO.slice(0, 10);
+  const daysFromToday = calendarDaysBetween(todayISO, deadlineISO);
+
+  if (daysFromToday < 0) {
+    const daysOverdue = Math.abs(daysFromToday);
+    let enriched: AnalyzeDocumentResponse = {
+      ...data,
+      deadlineStatus: "overdue",
+      daysOverdue,
+      daysUntilDeadline: undefined,
+      actionNeeded: true,
+      riskLevel: data.riskLevel === "low" ? "high" : elevateRiskLevel(data.riskLevel),
+      urgentWarning:
+        data.urgentWarning?.trim() ||
+        defaultUrgentWarning("overdue", data, undefined, daysOverdue),
+    };
+
+    if (isPaymentContext(enriched)) {
+      enriched = {
+        ...enriched,
+        recommendedResponseType:
+          enriched.recommendedResponseType === "none" ||
+          enriched.recommendedResponseType === "save_only" ||
+          enriched.recommendedResponseType === "reminder"
+            ? "pay"
+            : enriched.recommendedResponseType,
+        shouldGenerateLetter: false,
+        recommendedActions: mergeRecommendedActions(
+          enriched.recommendedActions,
+          OVERDUE_PAYMENT_ACTIONS,
+        ),
+      };
+      if (!enriched.urgentWarning?.includes("verlopen")) {
+        enriched.urgentWarning = defaultUrgentWarning("overdue", enriched, undefined, daysOverdue);
+      }
+    }
+
+    return enriched;
+  }
+
+  if (daysFromToday === 0) {
+    return {
+      ...data,
+      deadlineStatus: "today",
+      daysUntilDeadline: undefined,
+      daysOverdue: undefined,
+      actionNeeded: true,
+      riskLevel: data.riskLevel === "low" ? "high" : elevateRiskLevel(data.riskLevel),
+      urgentWarning: data.urgentWarning?.trim() || defaultUrgentWarning("today", data),
+    };
+  }
+
+  const withinSevenDays = daysFromToday <= 7;
+  return {
+    ...data,
+    deadlineStatus: "upcoming",
+    daysUntilDeadline: daysFromToday,
+    daysOverdue: undefined,
+    urgentWarning:
+      withinSevenDays && !data.urgentWarning?.trim()
+        ? defaultUrgentWarning("upcoming", data, daysFromToday)
+        : data.urgentWarning,
+    riskLevel: withinSevenDays ? elevateRiskLevel(data.riskLevel) : data.riskLevel,
+  };
+}
 
 function stripPrematureFailureMessaging(
   data: AnalyzeDocumentResponse,
@@ -168,6 +362,7 @@ ${text}
 Geef een JSON-object met exact deze velden en types:
 ${ANALYZE_RESPONSE_JSON_SCHEMA}
 
+Vergelijk alle deadlines met de huidige datum (${todayISO}) en vul deadlineStatus, daysUntilDeadline, daysOverdue en urgentWarning correct in.
 Zorg dat recommendedActions minimaal één item bevat en aansluit bij recommendedResponseType.
 Zet shouldGenerateLetter op false tenzij een brief of mail echt helpt; laat generatedLetter dan weg.`;
 }
@@ -186,6 +381,7 @@ Belangrijk:
 - Vul scanQuality altijd in ("good", "unclear" of "failed").
 - Bij "good" of "unclear": lever altijd een volledige analyse op basis van zichtbare tekst.
 - Zorg dat recommendedActions minimaal één item bevat en aansluit bij recommendedResponseType.
+- Vergelijk alle zichtbare deadlines met de huidige datum (${todayISO}) en vul deadlineStatus, daysUntilDeadline, daysOverdue en urgentWarning correct in.
 - Zet shouldGenerateLetter op false tenzij een brief of mail echt helpt; laat generatedLetter dan weg.`;
 }
 
@@ -200,11 +396,12 @@ export function normalizeImageDataUrl(imageBase64: string): string {
 async function completeAndParse(
   client: OpenAI,
   messages: ChatCompletionMessageParam[],
-  options?: { temperature?: number; normalizeImageScan?: boolean },
+  options?: { temperature?: number; normalizeImageScan?: boolean; todayISO?: string },
 ): Promise<AnalyzeDocumentResponse> {
+  const todayISO = options?.todayISO ?? new Date().toISOString().slice(0, 10);
   const completion = await client.chat.completions.create({
     model: "gpt-4o-mini",
-    temperature: options?.temperature ?? 0.2,
+    temperature: options?.temperature ?? ANALYSIS_TEMPERATURE,
     response_format: { type: "json_object" },
     messages,
   });
@@ -216,7 +413,10 @@ async function completeAndParse(
 
   const parsed = parseJsonWithRepair(content);
   const validated = analyzeDocumentResponseSchema.parse(parsed);
-  return options?.normalizeImageScan ? normalizeImageScanFields(validated) : validated;
+  const withDeadline = enrichDeadlineFields(validated, todayISO);
+  return options?.normalizeImageScan
+    ? normalizeImageScanFields(withDeadline)
+    : withDeadline;
 }
 
 export async function analyzeDocumentText(
@@ -226,10 +426,14 @@ export async function analyzeDocumentText(
 ): Promise<AnalyzeDocumentResponse> {
   const todayISO = new Date().toISOString().slice(0, 10);
 
-  return completeAndParse(client, [
-    { role: "system", content: SYSTEM_PROMPT },
-    { role: "user", content: buildUserPrompt(category, text, todayISO) },
-  ]);
+  return completeAndParse(
+    client,
+    [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: buildUserPrompt(category, text, todayISO) },
+    ],
+    { temperature: ANALYSIS_TEMPERATURE, todayISO },
+  );
 }
 
 export async function analyzeDocumentImage(
@@ -252,6 +456,6 @@ export async function analyzeDocumentImage(
         ],
       },
     ],
-    { temperature: 0.1, normalizeImageScan: true },
+    { temperature: ANALYSIS_TEMPERATURE, normalizeImageScan: true, todayISO },
   );
 }
