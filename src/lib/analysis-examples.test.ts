@@ -30,6 +30,9 @@ const examples = {
     shouldGenerateLetter: false,
     responseReason:
       "Dit lijkt vooral een betaalverzoek. Een brief of mail is meestal niet nodig zolang de gegevens kloppen.",
+    financialImpactType: "payment",
+    amountDue: 1240,
+    dueDateISO: "2026-08-31",
   },
   municipalityDocuments: {
     title: "Verzoek om aanvullende documenten",
@@ -70,6 +73,7 @@ const examples = {
     recommendedResponseType: "compare",
     shouldGenerateLetter: false,
     responseReason: "Vergelijken is meestal voldoende; een brief is nu niet nodig.",
+    financialImpactType: "none",
   },
   unclearScanPartial: {
     title: "Aanslag gemeentelijke belastingen",
@@ -184,6 +188,9 @@ const examples = {
     recommendedResponseType: "save_only",
     shouldGenerateLetter: false,
     responseReason: "Dit is vooral een verbruiksoverzicht. Een brief of mail is meestal niet nodig.",
+    financialImpactType: "monthly_cost",
+    monthlyAmount: 270.58,
+    financialImpactMonth: "april 2026",
     documentKind: "usage_report",
     usageReport: {
       period: "april 2026",
@@ -224,6 +231,10 @@ const examples = {
     responseReason: "Een korte mail om uitleg of bezwaar kan nuttig zijn.",
     generatedLetter:
       "Geachte heer/mevrouw,\n\nIk ontving uw bericht over een prijsverhoging. Kunt u toelichten waarom...\n\nMet vriendelijke groet,",
+    documentKind: "price_increase",
+    financialImpactType: "price_increase",
+    monthlyAmount: 34.99,
+    financialImpactMonth: "2026-07",
   },
 } as const;
 
@@ -238,8 +249,15 @@ for (const [name, payload] of Object.entries(examples)) {
   }
   const data = result.data;
   if (name === "taxPaymentBill") {
-    if (!data.actionNeeded || data.recommendedResponseType !== "pay" || data.shouldGenerateLetter) {
-      console.error(`FAIL ${name}: expected pay flow without letter`);
+    if (
+      !data.actionNeeded ||
+      data.recommendedResponseType !== "pay" ||
+      data.shouldGenerateLetter ||
+      data.financialImpactType !== "payment" ||
+      data.amountDue !== 1240 ||
+      data.dueDateISO !== "2026-08-31"
+    ) {
+      console.error(`FAIL ${name}: expected pay flow without letter and payment financial impact`);
       failed++;
       continue;
     }
@@ -263,17 +281,25 @@ for (const [name, payload] of Object.entries(examples)) {
       data.shouldGenerateLetter ||
       data.recommendedResponseType === "email" ||
       !data.usageReport?.electricityKwh ||
-      data.usageReport.returnedElectricityKwh === data.usageReport.electricityKwh
+      data.usageReport.returnedElectricityKwh === data.usageReport.electricityKwh ||
+      data.financialImpactType !== "monthly_cost" ||
+      data.monthlyAmount !== 270.58
     ) {
       console.error(`FAIL ${name}: expected usage_report without letter, with separate usage fields`);
       failed++;
       continue;
     }
   }
-  if (name === "priceIncrease" && !data.shouldGenerateLetter) {
-    console.error(`FAIL ${name}: expected letter for price increase`);
-    failed++;
-    continue;
+  if (name === "priceIncrease") {
+    if (
+      !data.shouldGenerateLetter ||
+      data.financialImpactType !== "price_increase" ||
+      data.monthlyAmount !== 34.99
+    ) {
+      console.error(`FAIL ${name}: expected letter and price_increase financial impact`);
+      failed++;
+      continue;
+    }
   }
   if (name === "unclearScanPartial") {
     if (data.scanQuality !== "unclear" || /maak een duidelijkere foto/i.test(data.summary)) {

@@ -81,6 +81,38 @@ Energierapport / verbruiksoverzicht (documentKind = "usage_report"):
 - Scheid teruglevering (returnedElectricityKwh / returnedElectricityAmount) van gewoon stroomverbruik (electricityKwh).
 - Bij onduidelijke of afgesneden waarden: laat exacte usageReport-velden weg en leg onzekerheid uit in scanQualityReason (bij scans) of summary.`;
 
+const FINANCIAL_IMPACT_RULES = `
+Financiële impact op maandbudget (verplicht veld financialImpactType):
+- Bepaal of het document invloed heeft op het maandbudget van de gebruiker.
+- Vul financialImpactType altijd in. Verzin geen bedragen; laat bedragvelden weg als ze niet duidelijk in het document staan.
+
+Waarden:
+- "none": geen geldimpact (puur informatief, geen betaling, geen terugbetaling, geen nieuwe maandlast).
+- "payment": factuur, rekening, betaalverzoek, aanmaning, belastingaanslag of ander eenmalig te betalen bedrag.
+  - Vul amountDue en dueDateISO alleen in als het bedrag en de betaaldatum duidelijk zichtbaar zijn.
+  - dueDateISO alleen bij exacte datum (YYYY-MM-DD), niet verzinnen.
+- "monthly_cost": doorlopend contract, abonnement of vaste maandlast.
+  - Vul monthlyAmount alleen in als het maandbedrag duidelijk zichtbaar is.
+- "price_increase": prijsverhoging of tariefwijziging met hogere maandlast.
+  - Vul priceIncreaseAmount alleen in als het extra bedrag of de verhoging duidelijk zichtbaar is (niet het nieuwe totaalbedrag tenzij dat expliciet de verhoging is).
+- "refund": terugbetaling, creditnota of geld dat de gebruiker terugkrijgt.
+- "possible_saving": mogelijkheid om maandelijks te besparen (bijv. goedkoper contract, korting).
+- "unknown": er lijkt geldimpact te zijn maar type of bedrag is onduidelijk.
+
+Koppeling aan documentKind:
+- invoice, payment_request, reminder met betaling: meestal "payment".
+- contract, subscription met maandbedrag: meestal "monthly_cost".
+- price_increase: "price_increase".
+- usage_report: meestal "none" of "monthly_cost" als alleen maandkosten worden getoond (monthlyAmount = totalCost of monthlyCost indien zichtbaar).
+- information zonder geld: "none".
+
+financialImpactMonth (optioneel):
+- Vul in als duidelijk voor welke maand/periode de impact geldt (bijv. "2026-04" of "april 2026").
+
+Eurobedragen:
+- Nederlandse notatie naar JSON-getallen: "€ 204,50" => 204.50, "€ 1.240,00" => 1240.00.
+- Gebruik punt als decimaalteken in JSON; geen valutasymbolen in getallen.`;
+
 const TABLE_EXTRACTION_RULES = `
 Tabellen en cijfers (bij afbeeldingen en tabellen in tekst):
 - Lees tabellen en kolommen zorgvuldig; haal verbruik en kosten per regel uit.
@@ -95,6 +127,7 @@ const SYSTEM_PROMPT = `Je bent BriefChecker, een AI-assistent die Nederlandse br
 
 ${DOCUMENT_KIND_RULES}
 ${USAGE_REPORT_RULES}
+${FINANCIAL_IMPACT_RULES}
 
 Regels:
 - Schrijf alles in het Nederlands, in eenvoudige taal.
@@ -426,6 +459,7 @@ ${ANALYZE_RESPONSE_JSON_SCHEMA}
 
 Bepaal eerst documentKind. Bij energierapport of verbruiksoverzicht: documentKind "usage_report", vul usageReport in, geen verzonnen deadlines.
 Vergelijk alle deadlines met de huidige datum (${todayISO}) en vul deadlineStatus, daysUntilDeadline, daysOverdue en urgentWarning correct in.
+Vul financialImpactType altijd in; koppel bedragvelden (amountDue, monthlyAmount, priceIncreaseAmount) alleen bij zichtbare bedragen.
 Zorg dat recommendedActions minimaal één item bevat en aansluit bij recommendedResponseType.
 Zet shouldGenerateLetter op false tenzij een brief of mail echt helpt; laat generatedLetter dan weg.`;
 }
@@ -446,6 +480,7 @@ Belangrijk:
 - Bij "good" of "unclear": lever altijd een volledige analyse op basis van zichtbare tekst.
 - Zorg dat recommendedActions minimaal één item bevat en aansluit bij recommendedResponseType.
 - Vergelijk alle zichtbare deadlines met de huidige datum (${todayISO}) en vul deadlineStatus, daysUntilDeadline, daysOverdue en urgentWarning correct in — niet bij puur verbruiksoverzicht zonder betaaltermijn.
+- Vul financialImpactType altijd in; koppel bedragvelden alleen bij zichtbare bedragen (Nederlandse euro-notatie naar getallen).
 - Zet shouldGenerateLetter op false tenzij een brief of mail echt helpt; laat generatedLetter dan weg.`;
 }
 

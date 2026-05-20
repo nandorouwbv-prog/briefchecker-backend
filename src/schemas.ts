@@ -96,6 +96,20 @@ export const usageReportSchema = z.object({
 
 export type UsageReport = z.infer<typeof usageReportSchema>;
 
+export const financialImpactTypes = [
+  "none",
+  "payment",
+  "refund",
+  "monthly_cost",
+  "price_increase",
+  "possible_saving",
+  "unknown",
+] as const;
+
+export type FinancialImpactType = (typeof financialImpactTypes)[number];
+
+export const financialImpactTypeSchema = z.enum(financialImpactTypes);
+
 export const recommendedActionSchema = z.object({
   type: recommendedActionTypeSchema,
   label: z.string(),
@@ -129,6 +143,12 @@ export const analyzeDocumentResponseSchema = z
     scanQualityReason: z.string().optional(),
     documentKind: documentKindSchema.optional(),
     usageReport: usageReportSchema.optional(),
+    financialImpactType: financialImpactTypeSchema.optional(),
+    amountDue: z.number().optional(),
+    dueDateISO: z.string().optional(),
+    monthlyAmount: z.number().optional(),
+    priceIncreaseAmount: z.number().optional(),
+    financialImpactMonth: z.string().optional(),
   })
   .transform((data) => {
     if (!data.shouldGenerateLetter) {
@@ -181,7 +201,13 @@ export const ANALYZE_RESPONSE_JSON_SCHEMA = `{
     "gasCost": number (optioneel, gaskosten in euro),
     "totalCost": number (optioneel, totaalbedrag in euro indien zichtbaar),
     "notableChange": "string (optioneel, korte Nederlandse opmerking over opvallend verschil t.o.v. vorige maand/jaar)"
-  } (optioneel; alleen invullen bij documentKind usage_report)
+  } (optioneel; alleen invullen bij documentKind usage_report),
+  "financialImpactType": "none" | "payment" | "refund" | "monthly_cost" | "price_increase" | "possible_saving" | "unknown" (altijd invullen),
+  "amountDue": number (optioneel, alleen bij financialImpactType payment: te betalen bedrag in euro),
+  "dueDateISO": "string ISO 8601 YYYY-MM-DD (optioneel, alleen bij payment: betaaldatum indien zichtbaar)",
+  "monthlyAmount": number (optioneel, alleen bij monthly_cost: maandelijks bedrag in euro),
+  "priceIncreaseAmount": number (optioneel, alleen bij price_increase: verhoging in euro indien zichtbaar),
+  "financialImpactMonth": "string (optioneel, bijv. 2026-04 of april 2026: maand waarop de financiële impact betrekking heeft)"
 }`;
 
 export const IMAGE_SCAN_JSON_FIELDS = `
