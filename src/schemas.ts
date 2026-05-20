@@ -64,6 +64,38 @@ export const deadlineStatusSchema = z.enum(["none", "upcoming", "today", "overdu
 
 export type DeadlineStatus = z.infer<typeof deadlineStatusSchema>;
 
+export const documentKinds = [
+  "letter",
+  "contract",
+  "invoice",
+  "payment_request",
+  "usage_report",
+  "price_increase",
+  "reminder",
+  "information",
+  "unknown",
+] as const;
+
+export type DocumentKind = (typeof documentKinds)[number];
+
+export const documentKindSchema = z.enum(documentKinds);
+
+export const usageReportSchema = z.object({
+  period: z.string().optional(),
+  electricityKwh: z.number().optional(),
+  electricityCost: z.number().optional(),
+  electricityPreviousMonthKwh: z.number().optional(),
+  electricityPreviousYearKwh: z.number().optional(),
+  returnedElectricityKwh: z.number().optional(),
+  returnedElectricityAmount: z.number().optional(),
+  gasM3: z.number().optional(),
+  gasCost: z.number().optional(),
+  totalCost: z.number().optional(),
+  notableChange: z.string().optional(),
+});
+
+export type UsageReport = z.infer<typeof usageReportSchema>;
+
 export const recommendedActionSchema = z.object({
   type: recommendedActionTypeSchema,
   label: z.string(),
@@ -95,6 +127,8 @@ export const analyzeDocumentResponseSchema = z
     generatedLetter: z.string().optional(),
     scanQuality: scanQualitySchema.optional(),
     scanQualityReason: z.string().optional(),
+    documentKind: documentKindSchema.optional(),
+    usageReport: usageReportSchema.optional(),
   })
   .transform((data) => {
     if (!data.shouldGenerateLetter) {
@@ -133,7 +167,21 @@ export const ANALYZE_RESPONSE_JSON_SCHEMA = `{
   "recommendedResponseType": "none" | "pay" | "save_only" | "reminder" | "call" | "email" | "objection" | "cancel" | "compare" | "ask_explanation",
   "shouldGenerateLetter": boolean,
   "responseReason": "string (optioneel, korte uitleg in het Nederlands waarom wel/geen brief)",
-  "generatedLetter": "string (alleen invullen als shouldGenerateLetter true is; anders weglaten)"
+  "generatedLetter": "string (alleen invullen als shouldGenerateLetter true is; anders weglaten)",
+  "documentKind": "letter" | "contract" | "invoice" | "payment_request" | "usage_report" | "price_increase" | "reminder" | "information" | "unknown" (optioneel maar altijd invullen),
+  "usageReport": {
+    "period": "string (optioneel, bijv. april 2026)",
+    "electricityKwh": number (optioneel, verbruik stroom in kWh — niet teruglevering),
+    "electricityCost": number (optioneel, kosten stroom in euro),
+    "electricityPreviousMonthKwh": number (optioneel, verbruik vorige maand indien zichtbaar),
+    "electricityPreviousYearKwh": number (optioneel, verbruikzelfde maand vorig jaar indien zichtbaar),
+    "returnedElectricityKwh": number (optioneel, teruglevering in kWh),
+    "returnedElectricityAmount": number (optioneel, vergoeding teruglevering in euro),
+    "gasM3": number (optioneel, gasverbruik in m³),
+    "gasCost": number (optioneel, gaskosten in euro),
+    "totalCost": number (optioneel, totaalbedrag in euro indien zichtbaar),
+    "notableChange": "string (optioneel, korte Nederlandse opmerking over opvallend verschil t.o.v. vorige maand/jaar)"
+  } (optioneel; alleen invullen bij documentKind usage_report)
 }`;
 
 export const IMAGE_SCAN_JSON_FIELDS = `

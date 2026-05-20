@@ -42,7 +42,59 @@ Betaalbrief met verlopen betaaldeadline:
 - urgentWarning bijvoorbeeld: "Deze betaaldeadline is verlopen. Controleer of je al betaald hebt of onderneem zo snel mogelijk actie."
 - Voor andere verlopen deadlines, urgentWarning bijvoorbeeld: "Deze deadline is verlopen. Onderneem zo snel mogelijk actie."`;
 
-const SYSTEM_PROMPT = `Je bent BriefChecker, een AI-assistent die Nederlandse brieven, contracten, abonnementen en officiële documenten in eenvoudig Nederlands uitlegt. Je geeft samenvattingen, actiepunten, deadlines en soms een voorbeeldbrief of -mail. Je geeft geen juridisch, financieel of fiscaal advies.
+const DOCUMENT_KIND_RULES = `
+Documenttype (verplicht):
+- Bepaal eerst documentKind en vul het altijd in.
+- Mogelijke waarden: "letter", "contract", "invoice", "payment_request", "usage_report", "price_increase", "reminder", "information", "unknown".
+- Kies het type dat het document het best beschrijft; bij twijfel "unknown".
+
+Soorten documenten:
+- letter: algemene brief die reactie of actie kan vereisen
+- contract: contract, voorwaarden, looptijd, opzegging
+- invoice: factuur of rekening met te betalen bedrag
+- payment_request: betaalverzoek, aanmaning, incasso
+- usage_report: energierapport, maandoverzicht verbruik, verbruiks- en kostenoverzicht met tabellen (stroom/gas, kWh, m³)
+- price_increase: prijsverhoging of tariefwijziging
+- reminder: herinnering zonder nieuwe inhoud
+- information: puur informatief zonder duidelijke actie
+- unknown: onduidelijk type`;
+
+const USAGE_REPORT_RULES = `
+Energierapport / verbruiksoverzicht (documentKind = "usage_report"):
+- Herken energierapporten, maandoverzichten van verbruik, verbruiksrapporten en kostenoverzichten met tabellen (bijv. Eneco, Vattenfall, Essent).
+- Dit is géén gewone brief die een reactie vereist.
+- Verzin geen deadlines; laat deadlineISO weg tenzij er expliciet een betaaltermijn of verplichte actie in staat.
+- actionNeeded: meestal false, tenzij het document duidelijk een betaaldeadline of verplichte actie bevat.
+- recommendedResponseType: meestal "save_only" of "compare" (bij hoge maandkosten); niet "email" of "objection".
+- shouldGenerateLetter: false.
+- responseReason bijv.: "Dit is vooral een verbruiksoverzicht. Een brief of mail is meestal niet nodig."
+- Vul usageReport in met zichtbare waarden uit tabellen (zie tabelregels bij afbeeldingen).
+- title bijv.: "Energierapport april 2026" (periode + jaar indien zichtbaar).
+- summary bijv.: "Overzicht van stroom- en gasverbruik en kosten in april 2026."
+- simpleExplanation: leg in gewoon Nederlands uit wat het rapport laat zien (verbruik, kosten, vergelijking vorige maand/jaar).
+- notableChange in usageReport: benoem opvallende verschillen (bijv. stroomverbruik veel hoger dan vorige maand of vorig jaar).
+- recommendedActions: nuttige acties, bijvoorbeeld:
+  - type "check", label "Controleer je stroomverbruik", description over verbruik controleren
+  - type "save", label "Bewaar dit rapport", description over bewaren voor eigen administratie
+  - type "compare", label "Vergelijk je energiecontract", description alleen als maandkosten hoog lijken of notableChange dat suggereert
+- monthlyCost: vul in als totale maandkosten of usageReport.totalCost duidelijk zichtbaar zijn.
+- Scheid teruglevering (returnedElectricityKwh / returnedElectricityAmount) van gewoon stroomverbruik (electricityKwh).
+- Bij onduidelijke of afgesneden waarden: laat exacte usageReport-velden weg en leg onzekerheid uit in scanQualityReason (bij scans) of summary.`;
+
+const TABLE_EXTRACTION_RULES = `
+Tabellen en cijfers (bij afbeeldingen en tabellen in tekst):
+- Lees tabellen en kolommen zorgvuldig; haal verbruik en kosten per regel uit.
+- Nederlandse notatie omzetten naar JSON-getallen: "€ 264,92" => 264.92, "1.067 kWh" => 1067, "2 m³" => 2.
+- Eenheden: kWh voor stroomverbruik, m³ voor gas, euro voor bedragen.
+- Rijen met vorige maand en vorig jaar (zelfde maand): vul electricityPreviousMonthKwh en electricityPreviousYearKwh in als zichtbaar.
+- Teruglevering (teruglevering stroom, saldering, opwek): returnedElectricityKwh en returnedElectricityAmount — niet mengen met electricityKwh.
+- Verbruik (stroom/gas) en kosten apart houden; totalCost alleen als totaal duidelijk op het document staat.
+- Als waarden zijn afgesneden of onleesbaar: laat betreffende usageReport-velden weg en vermeld onzekerheid in scanQualityReason.`;
+
+const SYSTEM_PROMPT = `Je bent BriefChecker, een AI-assistent die Nederlandse brieven, contracten, abonnementen, energierapporten en officiële documenten in eenvoudig Nederlands uitlegt. Je geeft samenvattingen, actiepunten, deadlines en soms een voorbeeldbrief of -mail. Je geeft geen juridisch, financieel of fiscaal advies.
+
+${DOCUMENT_KIND_RULES}
+${USAGE_REPORT_RULES}
 
 Regels:
 - Schrijf alles in het Nederlands, in eenvoudige taal.
@@ -63,20 +115,28 @@ Aanbevolen reactie en brief/mail:
 
 Zet shouldGenerateLetter alleen op true wanneer een schriftelijke reactie echt zinvol is.
 
-Voorbeelden:
+Voorbeelden (documentKind):
+- Energierapport of maandoverzicht verbruik/kosten:
+  documentKind = "usage_report", usageReport invullen, recommendedResponseType "save_only" of "compare",
+  shouldGenerateLetter = false, actionNeeded meestal false,
+  responseReason "Dit is vooral een verbruiksoverzicht. Een brief of mail is meestal niet nodig."
+
 - Betaalbrief, factuur of belastingaanslag:
+  documentKind = "payment_request" of "invoice",
   recommendedResponseType = "pay", shouldGenerateLetter = false,
   responseReason bijv. "Dit lijkt vooral een betaalverzoek. Een brief of mail is meestal niet nodig zolang de gegevens kloppen."
   recommendedActions: minstens pay en eventueel save (reminder) — geen automatische brief.
 
 - Puur informatieve brief zonder actie:
-  recommendedResponseType = "save_only", shouldGenerateLetter = false.
+  documentKind = "information", recommendedResponseType = "save_only", shouldGenerateLetter = false.
 
 - Contract loopt binnenkort af (energie/telecom/verzekering):
+  documentKind = "contract",
   recommendedResponseType = "compare", shouldGenerateLetter = false,
   tenzij opzeggen of vragen stellen nodig is — dan "cancel" of "ask_explanation" en shouldGenerateLetter alleen true als een schriftelijke reactie nodig is.
 
 - Prijsverhoging of ongewenste wijziging:
+  documentKind = "price_increase",
   recommendedResponseType = "ask_explanation" of "cancel",
   shouldGenerateLetter = true als bezwaar, opzegging of uitleg per brief/mail kan.
 
@@ -102,6 +162,8 @@ Voorbeelden:
 Koppel recommendedActions aan recommendedResponseType (bijv. pay bij betaalbrief, compare bij contractvergelijking).`;
 
 const IMAGE_SCAN_QUALITY_RULES = `
+${TABLE_EXTRACTION_RULES}
+
 Scan-kwaliteit (verplicht bij afbeeldingen):
 - scanQuality: beoordeel hoe goed de tekst op de foto leesbaar is.
 - Als het document grotendeels leesbaar is: geef altijd de best mogelijke gestructureerde analyse. Wijs de scan niet af alleen omdat een klein deel onduidelijk is.
@@ -362,6 +424,7 @@ ${text}
 Geef een JSON-object met exact deze velden en types:
 ${ANALYZE_RESPONSE_JSON_SCHEMA}
 
+Bepaal eerst documentKind. Bij energierapport of verbruiksoverzicht: documentKind "usage_report", vul usageReport in, geen verzonnen deadlines.
 Vergelijk alle deadlines met de huidige datum (${todayISO}) en vul deadlineStatus, daysUntilDeadline, daysOverdue en urgentWarning correct in.
 Zorg dat recommendedActions minimaal één item bevat en aansluit bij recommendedResponseType.
 Zet shouldGenerateLetter op false tenzij een brief of mail echt helpt; laat generatedLetter dan weg.`;
@@ -378,10 +441,11 @@ Geef een JSON-object met exact deze velden en types:
 ${ANALYZE_IMAGE_RESPONSE_JSON_SCHEMA}
 
 Belangrijk:
+- Bepaal eerst documentKind. Lees tabellen zorgvuldig; bij usage_report vul usageReport met zichtbare cijfers (Nederlandse notatie naar getallen).
 - Vul scanQuality altijd in ("good", "unclear" of "failed").
 - Bij "good" of "unclear": lever altijd een volledige analyse op basis van zichtbare tekst.
 - Zorg dat recommendedActions minimaal één item bevat en aansluit bij recommendedResponseType.
-- Vergelijk alle zichtbare deadlines met de huidige datum (${todayISO}) en vul deadlineStatus, daysUntilDeadline, daysOverdue en urgentWarning correct in.
+- Vergelijk alle zichtbare deadlines met de huidige datum (${todayISO}) en vul deadlineStatus, daysUntilDeadline, daysOverdue en urgentWarning correct in — niet bij puur verbruiksoverzicht zonder betaaltermijn.
 - Zet shouldGenerateLetter op false tenzij een brief of mail echt helpt; laat generatedLetter dan weg.`;
 }
 

@@ -153,6 +153,52 @@ const examples = {
     shouldGenerateLetter: false,
     responseReason: "Dit is een verlopen betaalverzoek; een brief is meestal niet nodig.",
   },
+  energyUsageReport: {
+    title: "Energierapport april 2026",
+    category: "energy",
+    provider: "Eneco",
+    summary: "Overzicht van stroom- en gasverbruik en kosten in april 2026.",
+    simpleExplanation:
+      "Je hebt in april 1067 kWh stroom verbruikt (veel meer dan vorige maand). Je leverde 29 kWh terug. Gasverbruik was 2 m³. De stroomkosten waren ongeveer € 265.",
+    actionNeeded: false,
+    deadlineStatus: "none",
+    riskLevel: "low",
+    monthlyCost: 270.58,
+    recommendedActions: [
+      {
+        type: "check",
+        label: "Controleer je stroomverbruik",
+        description: "Je verbruik was veel hoger dan vorige maand; controleer of dat klopt.",
+      },
+      {
+        type: "save",
+        label: "Bewaar dit rapport",
+        description: "Bewaar het overzicht voor je eigen administratie.",
+      },
+      {
+        type: "compare",
+        label: "Vergelijk je energiecontract",
+        description: "Bekijk of een ander contract past bij je verbruik en kosten.",
+      },
+    ],
+    recommendedResponseType: "save_only",
+    shouldGenerateLetter: false,
+    responseReason: "Dit is vooral een verbruiksoverzicht. Een brief of mail is meestal niet nodig.",
+    documentKind: "usage_report",
+    usageReport: {
+      period: "april 2026",
+      electricityKwh: 1067,
+      electricityCost: 264.92,
+      electricityPreviousMonthKwh: 182,
+      electricityPreviousYearKwh: 56,
+      returnedElectricityKwh: 29,
+      returnedElectricityAmount: 3.14,
+      gasM3: 2,
+      gasCost: 2.52,
+      totalCost: 270.58,
+      notableChange: "Stroomverbruik is veel hoger dan vorige maand (1067 vs 182 kWh) en dan april vorig jaar (56 kWh).",
+    },
+  },
   priceIncrease: {
     title: "Prijsverhoging abonnement",
     category: "subscription",
@@ -210,6 +256,19 @@ for (const [name, payload] of Object.entries(examples)) {
     console.error(`FAIL ${name}: expected compare`);
     failed++;
     continue;
+  }
+  if (name === "energyUsageReport") {
+    if (
+      data.documentKind !== "usage_report" ||
+      data.shouldGenerateLetter ||
+      data.recommendedResponseType === "email" ||
+      !data.usageReport?.electricityKwh ||
+      data.usageReport.returnedElectricityKwh === data.usageReport.electricityKwh
+    ) {
+      console.error(`FAIL ${name}: expected usage_report without letter, with separate usage fields`);
+      failed++;
+      continue;
+    }
   }
   if (name === "priceIncrease" && !data.shouldGenerateLetter) {
     console.error(`FAIL ${name}: expected letter for price increase`);
